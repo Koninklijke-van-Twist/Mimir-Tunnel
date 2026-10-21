@@ -292,11 +292,12 @@ cp -a -- "$DEST/.env" "$stage/.env"
 
 if need_npm_install; then
   command -v npm >/dev/null || die "npm ontbreekt."
-  say "package.json of package-lock.json gewijzigd; npm install --omit=dev."
+  say "package.json of package-lock.json gewijzigd; business-central-mcp bouwen en npm install --omit=dev."
   chown -R "$SERVICE_USER:$SERVICE_GROUP" "$stage"
-  # Cache in de stage, zodat de draaiende installatie niet wordt beschreven.
-  sudo -u "$SERVICE_USER" -- env "PATH=$PATH" "HOME=$stage" "npm_config_cache=$stage/.npm-cache" \
-    bash -c 'cd "$1" && npm install --omit=dev' bash "$stage"
+  # Cache en bouwmap in de stage, zodat de draaiende installatie niet wordt beschreven.
+  sudo -u "$SERVICE_USER" -- env "PATH=$PATH" "HOME=$stage" "npm_config_cache=$stage/.npm-cache" "TMPDIR=$stage" \
+    bash -c 'cd "$1" && { [[ ! -f scripts/build-bc-mcp.sh ]] || bash scripts/build-bc-mcp.sh "$1"; } && npm install --omit=dev' bash "$stage"
+  rm -rf -- "$stage/vendor"
   rm -rf -- "$stage/.npm" "$stage/.npm-cache"
 else
   say "package.json en package-lock.json ongewijzigd; npm install overgeslagen."
