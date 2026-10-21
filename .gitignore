@@ -1,0 +1,7 @@
+node_modules/
+vendor/
+.env
+logs/
+.state/
+*.tgz
+npm-debug.log*

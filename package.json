@@ -1,0 +1,19 @@
+{
+  "name": "mimir-bc-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lokale HTTP-bridge van Mímir naar Business Central via business-central-mcp",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js",
+    "install:bc": "node scripts/install-bc-mcp.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "business-central-mcp": "2.2.0"
+  }
+}
