@@ -1,0 +1,116 @@
+import { BadRequestError } from "./errors.js";
+
+const PAGE_ID = /^[1-9]\d*$/;
+
+export function parsePageQuery(url, pageIdRaw) {
+  if (!PAGE_ID.test(String(pageIdRaw))) {
+    throw new BadRequestError("page-id moet een positief geheel getal zijn");
+  }
+  const filters = [];
+  for (const raw of url.searchParams.getAll("filter")) {
+    const eq = raw.indexOf("=");
+    if (eq <= 0) {
+      throw new BadRequestError("filter moet Column=waarde zijn");
+    }
+    const column = raw.slice(0, eq);
+    const value = raw.slice(eq + 1);
+    if (!column || value === "") throw new BadRequestError("filter moet Column=waarde zijn");
+    filters.push({ column, value });
+  }
+  const columns = url.searchParams.getAll("columns")
+    .flatMap((part) => part.split(","))
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const top = optionalInt(url.searchParams.get("top"), "top", 1);
+  const skip = optionalInt(url.searchParams.get("skip"), "skip", 0);
+  const company = url.searchParams.get("company") || undefined;
+  const section = url.searchParams.get("section") || undefined;
+  return {
+    pageId: Number(pageIdRaw),
+    company,
+    section,
+    filters,
+    columns,
+    top,
+    skip,
+  };
+}
+
+function optionalInt(raw, name, min) {
+  if (raw == null || raw === "") return undefined;
+  if (!/^\d+$/.test(raw)) throw new BadRequestError(`${name} moet een geheel getal zijn`);
+  const value = Number(raw);
+  if (value < min) throw new BadRequestError(`${name} moet >= ${min} zijn`);
+  return value;
+}
+
+export function shapePage(pageId, company, read) {
+  const section = read?.section ?? {};
+  const rows = Array.isArray(section.rows)
+    ? section.rows.map((row) => ({
+      bookmark: row?.bookmark ?? null,
+      cells: row?.cells && typeof row.cells === "object" ? row.cells : {},
+    }))
+    : [];
+  const body = {
+    pageId,
+    company: company ?? null,
+    sectionId: section.sectionId ?? "header",
+    kind: section.kind ?? null,
+    caption: section.caption ?? null,
+    totalRowCount: section.totalRowCount ?? null,
+    stateVersion: read?.stateVersion ?? null,
+    rows,
+  };
+  if (Array.isArray(section.fields)) body.fields = section.fields;
+  return body;
+}
+
+export async function listCompanies(session) {
+  const result = await session.call("bc_list_companies", {});
+  if (result && typeof result.currentCompany === "string" && result.currentCompany) {
+    session.company = result.currentCompany;
+  }
+  return result;
+}
+
+/**
+ * open → read_data → close, ook als het lezen mislukt.
+ * Sluiten dat mislukt maakt de sessie onbruikbaar (tainted): de pool logt
+ * daarna opnieuw in, zodat er geen pagina open blijft staan.
+ */
+export async function readPage(session, query, logger) {
+  if (query.company && query.company !== session.company) {
+    await session.call("bc_switch_company", { companyName: query.company });
+    session.company = query.company;
+  }
+  const opened = await session.call("bc_open_page", { pageId: query.pageId });
+  const pageContextId = opened?.pageContextId;
+  if (typeof pageContextId !== "string" || pageContextId === "") {
+    session.tainted = true;
+    throw new BadRequestError("bc_open_page gaf geen pageContextId");
+  }
+  try {
+    const args = { pageContextId };
+    if (query.section) args.section = query.section;
+    if (query.filters.length > 0) args.filters = query.filters;
+    if (query.columns.length > 0) args.columns = query.columns;
+    if (query.top != null || query.skip != null) {
+      args.range = { offset: query.skip ?? 0, limit: query.top ?? 100 };
+    }
+    const read = await session.call("bc_read_data", args);
+    return shapePage(query.pageId, session.company, read);
+  } finally {
+    await closeOne(session, pageContextId, logger);
+  }
+}
+
+async function closeOne(session, pageContextId, logger) {
+  if (session.dead) return;
+  try {
+    await session.call("bc_close_page", { pageContextId });
+  } catch (err) {
+    session.tainted = true;
+    logger?.warn("page.close_failed", { code: err.code || "ERROR" });
+  }
+}

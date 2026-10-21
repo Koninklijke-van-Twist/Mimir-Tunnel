@@ -1,0 +1,19 @@
+[Unit]
+Description=Mimir BC HTTP-bridge (business-central-mcp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bcbridge
+Group=bcbridge
+WorkingDirectory=/opt/mimir-bc-bridge
+EnvironmentFile=/opt/mimir-bc-bridge/.env
+ExecStart=/usr/bin/node /opt/mimir-bc-bridge/src/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
