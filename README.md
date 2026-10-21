@@ -60,9 +60,11 @@ node -v
 ```bash
 sudo useradd --system --home-dir /opt/mimir-bc-bridge --create-home --shell /usr/sbin/nologin bcbridge
 sudo mkdir -p /opt/mimir-bc-bridge
-sudo rsync -a --exclude node_modules --exclude .env ./ /opt/mimir-bc-bridge/
+sudo tar -C "$(pwd)" \
+  --exclude .git --exclude node_modules --exclude .env --exclude vendor --exclude logs --exclude .state \
+  -cf - . | sudo tar -C /opt/mimir-bc-bridge -xf -
 sudo chown -R bcbridge:bcbridge /opt/mimir-bc-bridge
-sudo -u bcbridge bash -lc 'cd /opt/mimir-bc-bridge && npm install --omit=dev'
+sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && npm install --omit=dev'
 ```
 
 `npm install` in **deze** repo is het goede pad: `business-central-mcp` komt als dependency binnen en npm slaat de devDependencies van dat pakket over.
@@ -87,6 +89,28 @@ journalctl -u mimir-bc-bridge -f
 ```
 
 Het unit-bestand draait als gebruiker `bcbridge`, leest `/opt/mimir-bc-bridge/.env` en herstart bij een crash. `BC_PASSWORD` en `TUNNEL_TOKEN` staan alleen in dat bestand en in de omgeving van het proces, nooit op de command line.
+
+### Bijwerken
+
+Op de server staat de git-checkout in `/home/administrator/mimir-tunnel` (eigenaar `administrator`) en de draaiende code in `/opt/mimir-bc-bridge` (eigenaar `bcbridge`). `scripts/update.sh` werkt die installatie bij. Draai het met sudo, vanuit de checkout:
+
+```bash
+sudo /home/administrator/mimir-tunnel/scripts/update.sh main
+```
+
+Zonder argument is de branch `master`. Het eerste argument wint van `MIMIR_BRANCH`. Deze repository heet op GitHub `main`; geef die naam mee. `sudo MIMIR_BRANCH=main /home/administrator/mimir-tunnel/scripts/update.sh` doet hetzelfde.
+
+Het script is idempotent en print elke stap:
+
+1. `git fetch` en `checkout`/`pull --ff-only` van de gekozen branch, als de eigenaar van de checkout. Een vieze werkboom of een remote die niet fast-forward is, stopt vóór `/opt` wijzigt.
+2. Bewaart de huidige `/opt/mimir-bc-bridge` in `/opt/mimir-bc-bridge.backups/<tijd>`. Die map is alleen voor root (`700`). Er blijven drie backups staan. In een backup zit ook `.env`.
+3. Kopieert de nieuwe code met `tar` (rsync staat op deze server niet). `.env` in `/opt` blijft het bestaande bestand; een `.env` uit git wordt niet meegenomen.
+4. Draait `npm install --omit=dev` alleen als `package.json` of `package-lock.json` veranderd is, of als `node_modules` ontbreekt. Anders gaat de bestaande `node_modules` mee.
+5. Zet eigenaar `bcbridge:bcbridge` en `.env` op modus `600`.
+6. `systemctl restart mimir-bc-bridge`.
+7. Vraagt `GET /health` op `127.0.0.1` met `TUNNEL_TOKEN` en `TUNNEL_PORT` uit `/opt/mimir-bc-bridge/.env`. Het token komt niet in de output.
+
+Lukt de healthcheck niet, dan zet het script de backup terug, herstart de service opnieuw en eindigt met een fout. De vorige versie blijft dan de draaiende. Een mislukte `npm install` gebeurt vóór de wissel, de draaiende service blijft dan onaangeroerd.
 
 ## Omgevingsvariabelen
 
