@@ -1,4 +1,4 @@
-import { BcToolError, CallTimeoutError } from "./errors.js";
+import { BcToolError, CallTimeoutError, UnsupportedToolError } from "./errors.js";
 import { markTransport, unwrapToolResult } from "./tool-result.js";
 
 /**
@@ -43,6 +43,11 @@ export class BcSession {
       this.logger?.info("bc.call", { tool, ms: Date.now() - started, ok: true });
       return value;
     } catch (err) {
+      if (isUnknownToolFailure(err)) {
+        const wrapped = new UnsupportedToolError(tool);
+        this.logger?.info("bc.call", { tool, ms: Date.now() - started, ok: false, code: wrapped.code });
+        throw wrapped;
+      }
       markTransport(err);
       // De SDK kan de call zelf op timeout zetten terwijl het kindproces nog
       // in BC bezig is. Die sessie niet hergebruiken.
@@ -69,4 +74,8 @@ export class BcSession {
     this.dead = true;
     await this.client.close?.();
   }
+}
+
+function isUnknownToolFailure(err) {
+  return /unknown tool:/i.test(String(err?.message || ""));
 }

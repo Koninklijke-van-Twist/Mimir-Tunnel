@@ -117,7 +117,15 @@ In een systemd-`EnvironmentFile` zijn aanhalingstekens geen syntax: schrijf `BC_
 
 Elk request, ook `/health`, heeft `Authorization: Bearer $TUNNEL_TOKEN`. Optioneel: `X-Mimir-Key-Id` (letters, cijfers, `._:@-`, max 80) voor de logregel. Een ongeldige waarde wordt als `invalid` gelogd, niet letterlijk.
 
-Antwoorden zijn JSON. Fouten: `{ "ok": false, "error": "...", "code": "..." }` met 400 (invoer of BC-validatie), 401 (token), 403 (tool geweigerd), 404, 405, 413, 502 (BC), 503 (wachtrij of dode sessie), 504 (timeout).
+Antwoorden zijn JSON. Fouten: `{ "ok": false, "error": "...", "code": "..." }` met 400 (invoer of BC-validatie), 401 (token), 403 (bekende tool geweigerd door beleid), 404, 405, 413, 502 (BC), 503 (wachtrij of dode sessie), 504 (timeout).
+
+Een `bc_`-tool die de bridge niet ondersteunt (de naam zit niet in de lees- of schrijfset, of het pakket kent hem niet) antwoordt **501** met een eigen body:
+
+```json
+{"error":"UNSUPPORTED_TOOL","tool":"bc_does_not_exist","message":"Deze tool wordt niet ondersteund door de bridge"}
+```
+
+Een bekende tool die het beleid blokkeert blijft **403** `{ "ok": false, "error": "...", "code": "TOOL_FORBIDDEN" }`. Dat is `TUNNEL_ALLOW_WRITE=false` voor een muterende tool, of een gezet `TUNNEL_TOOL_ALLOWLIST` waar de tool niet op staat. Een naam die niet de vorm `bc_` plus kleine letters, cijfers en `_` heeft is 400.
 
 ```bash
 TOKEN=$(grep '^TUNNEL_TOKEN=' /opt/mimir-bc-bridge/.env | cut -d= -f2-)
@@ -138,12 +146,25 @@ curl -sS -g \
 `GET /page/{id}` query:
 
 - `company` — exacte bedrijfsnaam; de sessie onthoudt het bedrijf en wisselt alleen als het verschilt.
-- `filter` — herhaalbaar, vorm `Kolom=waarde` (BC-filtersyntax in de waarde: `10000..20000`, `*twist*`, `>1000`). Meerdere filters zijn AND.
-- `columns` — kommagescheiden captions.
-- `top` / `skip` — worden `range.limit` / `range.offset`. Alleen `skip` gebruikt `top=100`.
+- `filter` — herhaalbaar, vorm `Kolom=waarde`. Meerdere filters zijn AND. De bridge probeert het filter eerst server-side (`bc_read_data` met `filters`). Op deze webclient ontbreekt vaak `columnBinderPath`, en een kaart heeft geen repeater. Het pakket antwoordt dan met `PROTOCOL_ERROR` (`Column … has no columnBinderPath for filtering`, `Page has no repeater -- cannot filter`, `Page has no FilterLogicalControl (filc) -- cannot filter`). Bij díe fouten leest de bridge de pagina ongefilterd en filtert zelf op de caption van de cel. `filterMode` is dan `client`. Lukt het server-side filter, dan is `filterMode` `server`. Een onbekende kolom (`Filter column not found`) antwoordt 502.
+- `columns` — kommagescheiden captions. Bij client-side filter past de bridge ze pas ná het matchen toe, zodat de filterkolom in de ruwe rijen mag ontbreken uit deze lijst.
+- `top` / `skip` — het gevraagde venster. Alleen `skip`, of een filter zonder `top`, gebruikt `top=100`. Zonder `top`, `skip` en `filter` is het één leesactie zonder `range` (het venster dat BC zelf geeft). Past `skip + top` in 50 rijen, dan is het één `bc_read_data` met die `range`.
 - `section` — standaard de header van de pagina (`lines`, `factbox:...`).
 
-Het antwoord bevat `rows[]` met `bookmark` en `cells`. `cells` is een object waarvan de sleutels de kolomcaptions zijn.
+`bc_read_data` houdt het geladen venster op deze webclient op ongeveer 50 rijen: een `limit` van 500 komt terug als 50, omdat een `DataLoaded` het venster vervangt in plaats van verlengt. Een `offset` voorbij dat venster is dan een lege slice, terwijl de nieuwe rijen vooraan staan. De bridge leest daarom intern in stukken van 50 en plakt unieke bookmarks aan elkaar. Komt een vervolgstuk leeg terug of met dezelfde bookmarks, dan herleest ze het begin één keer. Blijft het daarna stilstaan, of zijn er 40 leesacties geweest, dan stopt ze. `truncated: true` staat in het antwoord als het gevraagde `top` niet gevuld is en het laatste stuk nog vol was (`totalRowCount` ontbreekt of is groter dan wat er binnen is). Een korter laatste stuk geldt als het einde van de lijst. Bij `filterMode: client` gelden `top` en `skip` voor de treffers. Hoogstens 40 aanroepen: volle stukken van 50 zijn 2000 rijen; als elk vervolg een herlezing nodig heeft, minder.
+
+Client-side syntax is hoofdletterongevoelig en werkt op de celtekst (leading `@` mag, BC gebruikt dat voor hoofdletterongevoelig en de bridge vergelijkt altijd zo):
+
+- exact: `London`
+- joker: `*` en `?`, bijvoorbeeld `*twist*`
+- bereik: `10000..20000`, open met `..100` of `100..`
+- vergelijking: `>`, `<`, `>=`, `<=`, `<>`
+- OF in één waarde: `A|B`
+- getal als beide kanten op een getal lijken (`1234`, `1234.5`, `1234,5`); anders tekst
+
+Een kaart heeft geen rijen maar `fields`. Die velden tellen als één record, met de veldnaam als sleutel. Past het filter en is `skip` 0, dan blijven `fields` staan (geprojecteerd op `columns`). Anders is `fields` een lege lijst.
+
+Het antwoord bevat `rows[]` met `bookmark` en `cells`. `cells` is een object waarvan de sleutels de kolomcaptions zijn. `totalRowCount` blijft het aantal dat BC voor de repeater gaf; bij client-side filter is dat het ongefilterde aantal.
 
 ```bash
 curl -sS \
@@ -168,7 +189,7 @@ curl -sS \
 
 Muterend: `bc_write_data`, `bc_execute_action`, `bc_respond_dialog`, `bc_run_report`, `bc_wizard_navigate`, `bc_upload_file`, `bc_run_tests`.
 
-`TUNNEL_ALLOW_WRITE=false` weigert die tools met 403, ook als ze op de allowlist staan. Een onbekende `bc_`-tool telt dan ook als muterend. `bc_close_page` is opruimen en blijft toegestaan; de bridge roept hem zelf aan na een transactie, ook als de aanroeper hem niet op de allowlist heeft gezet. Een expliciete `bc_close_page` in `POST /call` volgt de allowlist wel.
+`TUNNEL_ALLOW_WRITE=false` weigert die tools met 403, ook als ze op de allowlist staan. `bc_close_page` is opruimen en blijft toegestaan; de bridge roept hem zelf aan na een transactie, ook als de aanroeper hem niet op de allowlist heeft gezet. Een expliciete `bc_close_page` in `POST /call` volgt de allowlist wel. Een `bc_`-naam buiten de lees- en schrijfset antwoordt 501 `UNSUPPORTED_TOOL`. Dat geldt ook als schrijven uit staat of de naam op de allowlist staat.
 
 De allowlist geldt alleen als `TUNNEL_TOOL_ALLOWLIST` een niet-lege waarde heeft. Anders zijn alle bekende tools toegestaan, minus mutaties als schrijven uit staat. Mímir beslist per API-key of een client mag schrijven; de bridge vertrouwt dat en kijkt alleen naar deze twee variabelen.
 

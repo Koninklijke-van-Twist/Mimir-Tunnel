@@ -1,4 +1,4 @@
-import { ForbiddenError } from "./errors.js";
+import { ForbiddenError, UnsupportedToolError } from "./errors.js";
 
 /** Tools die Tim als lezen classificeert, plus bc_get_operation (alleen naslag). */
 export const READ_TOOLS = new Set([
@@ -28,20 +28,25 @@ export const WRITE_TOOLS = new Set([
 const TOOL_NAME = /^bc_[a-z0-9_]+$/;
 
 export function isWriteTool(tool) {
-  if (WRITE_TOOLS.has(tool)) return true;
-  if (READ_TOOLS.has(tool)) return false;
-  // Onbekende toekomstige tools tellen als muterend zolang schrijven uit staat.
-  return true;
+  return WRITE_TOOLS.has(tool);
+}
+
+export function isKnownTool(tool) {
+  return READ_TOOLS.has(tool) || WRITE_TOOLS.has(tool);
 }
 
 /**
  * allowlist is null als TUNNEL_TOOL_ALLOWLIST niet gezet (of leeg) is.
- * Een gezet allowlist-filter weigert alles wat er niet op staat.
- * TUNNEL_ALLOW_WRITE=false weigert muterende tools ook als ze op de lijst staan.
+ * Een bc_-naam buiten de lees- en schrijfset is 501 (de bridge kent hem niet).
+ * Een gezet allowlist-filter weigert een bekende tool die er niet op staat (403).
+ * TUNNEL_ALLOW_WRITE=false weigert bekende muterende tools, ook als ze op de lijst staan (403).
  */
 export function assertToolAllowed(tool, { allowWrite, allowlist }) {
   if (typeof tool !== "string" || !TOOL_NAME.test(tool)) {
     throw new ForbiddenError("Toolnaam is ongeldig");
+  }
+  if (!isKnownTool(tool)) {
+    throw new UnsupportedToolError(tool);
   }
   if (!allowWrite && isWriteTool(tool)) {
     throw new ForbiddenError(`${tool} is muterend en TUNNEL_ALLOW_WRITE=false`);

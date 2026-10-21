@@ -3,7 +3,7 @@ import test from "node:test";
 import { parsePageQuery, readPage, shapePage } from "../src/pages.js";
 import { collectPageIds, normalizeCalls, runTransaction } from "../src/transaction.js";
 import { BcSession } from "../src/session.js";
-import { scriptedClient } from "./helpers.js";
+import { captureLogger, scriptedClient } from "./helpers.js";
 
 test("querystring wordt filters, kolommen en range", () => {
   const url = new URL("http://127.0.0.1/page/22?company=Koninklijke%20van%20Twist&filter=City=London&filter=No.=10000&columns=No.,Name&top=10&skip=5&section=lines");
@@ -102,6 +102,225 @@ test("expliciet sluiten wordt niet nog eens gedaan", async () => {
   const result = await runTransaction(session, spec);
   assert.deepEqual(result.closedPages, []);
   assert.equal(client.calls.filter((call) => call.name === "bc_close_page").length, 1);
+});
+
+function bcOk(value) {
+  return { structuredContent: value };
+}
+
+function bcErr(code, message) {
+  return { isError: true, structuredContent: { error: { code, message } } };
+}
+
+function row(bookmark, cells) {
+  return { bookmark, cells };
+}
+
+function section(rows, extra = {}) {
+  return bcOk({
+    stateVersion: 3,
+    section: {
+      sectionId: "header",
+      kind: "header",
+      caption: "Lijst",
+      totalRowCount: extra.totalRowCount ?? rows.length,
+      rows,
+      ...extra.section,
+    },
+  });
+}
+
+function openClose(handler) {
+  return scriptedClient((params) => {
+    const { name, arguments: args } = params;
+    if (name === "bc_open_page") return bcOk({ pageContextId: "ctx" });
+    if (name === "bc_close_page") return bcOk({ closed: true });
+    if (name === "bc_read_data") return handler(args, params);
+    throw new Error(name);
+  });
+}
+
+test("serverfilter in een klein venster blijft één bc_read_data", async () => {
+  const client = openClose((args) => section([row("bk", { Naam: "Adatum" })]));
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const page = await readPage(session, {
+    pageId: 22,
+    filters: [{ column: "City", value: "London" }],
+    columns: ["Naam"],
+    top: 10,
+    skip: 5,
+    section: "lines",
+  });
+  assert.equal(page.filterMode, "server");
+  assert.equal(page.truncated, undefined);
+  const read = client.calls.find((call) => call.name === "bc_read_data");
+  assert.deepEqual(read.arguments.filters, [{ column: "City", value: "London" }]);
+  assert.deepEqual(read.arguments.range, { offset: 5, limit: 10 });
+  assert.equal(read.arguments.section, "lines");
+});
+
+test("columnBinderPath valt terug op client-filter en respecteert top", async () => {
+  const logs = captureLogger();
+  const rows = [
+    row("1", { "Nr.": "1", Naam: "Alpha" }),
+    row("2", { "Nr.": "2", Naam: "Twist" }),
+    row("3", { "Nr.": "3", Naam: "twist bv" }),
+    row("4", { "Nr.": "4", Naam: "Anders" }),
+  ];
+  const client = openClose((args) => {
+    if (args.filters) return bcErr("PROTOCOL_ERROR", "Column Naam has no columnBinderPath for filtering");
+    assert.equal(args.columns, undefined);
+    return section(rows, { totalRowCount: 4 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200, logger: logs.logger });
+  const page = await readPage(session, {
+    pageId: 22,
+    filters: [
+      { column: "Naam", value: "*twist*" },
+      { column: "Nr.", value: "<>1" },
+    ],
+    columns: ["Naam"],
+    top: 1,
+    skip: 1,
+  }, logs.logger);
+  assert.equal(page.filterMode, "client");
+  assert.equal(page.truncated, undefined);
+  assert.equal(page.rows.length, 1);
+  assert.deepEqual(page.rows[0].cells, { Naam: "twist bv" });
+  assert.match(logs.text(), /page.filter_fallback/);
+  assert.equal(logs.text().includes("*twist*"), false);
+  assert.equal(logs.text().includes("columnBinderPath"), false);
+  const reads = client.calls.filter((call) => call.name === "bc_read_data");
+  assert.equal(reads.length, 2);
+  assert.ok(reads[0].arguments.filters);
+  assert.equal(reads[1].arguments.filters, undefined);
+  assert.deepEqual(client.calls.map((call) => call.name), ["bc_open_page", "bc_read_data", "bc_read_data", "bc_close_page"]);
+});
+
+test("kaart zonder repeater filtert fields en houdt een lege lijst bij een mis", async () => {
+  const fields = [
+    { name: "Servicenaam", value: "Alpha" },
+    { name: "Nr.", value: "9" },
+  ];
+  const client = openClose((args) => {
+    if (args.filters) return bcErr("PROTOCOL_ERROR", "Page has no repeater -- cannot filter");
+    return bcOk({ section: { sectionId: "header", kind: "header", caption: "Kaart", fields } });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const hit = await readPage(session, {
+    pageId: 11333028,
+    filters: [{ column: "Servicenaam", value: "alpha" }],
+    columns: ["Servicenaam"],
+    top: undefined,
+    skip: undefined,
+  });
+  assert.equal(hit.filterMode, "client");
+  assert.deepEqual(hit.rows, []);
+  assert.deepEqual(hit.fields, [{ name: "Servicenaam", value: "Alpha" }]);
+
+  const miss = await readPage(session, {
+    pageId: 11333028,
+    filters: [{ column: "Servicenaam", value: "Beta" }],
+    columns: [],
+    top: undefined,
+    skip: undefined,
+  });
+  assert.deepEqual(miss.fields, []);
+  assert.deepEqual(miss.rows, []);
+});
+
+test("Filter column not found en een andere protocolfout vallen niet terug", async () => {
+  for (const message of ["Filter column not found: Zz", "Page context not found: ctx"]) {
+    const client = openClose(() => bcErr("PROTOCOL_ERROR", message));
+    const session = new BcSession(client, { callTimeoutMs: 200 });
+    await assert.rejects(() => readPage(session, {
+      pageId: 22,
+      filters: [{ column: "Zz", value: "1" }],
+      columns: [],
+      top: 10,
+      skip: 0,
+    }), (err) => err.code === "PROTOCOL_ERROR" && err.status === 502);
+    assert.equal(client.calls.filter((call) => call.name === "bc_read_data").length, 1);
+    assert.equal(client.calls.at(-1).name, "bc_close_page");
+  }
+});
+
+test("serverfilter boven 50 blijft op elke leesactie staan", async () => {
+  const client = openClose((args) => {
+    assert.deepEqual(args.filters, [{ column: "Naam", value: "A" }]);
+    const start = args.range.offset;
+    const count = start >= 50 ? 10 : 50;
+    const rows = Array.from({ length: count }, (_, i) => row(`b${start + i}`, { Naam: "A" }));
+    return section(rows, { totalRowCount: 60 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const page = await readPage(session, {
+    pageId: 22,
+    filters: [{ column: "Naam", value: "A" }],
+    columns: [],
+    top: 60,
+    skip: 0,
+  });
+  assert.equal(page.filterMode, "server");
+  assert.equal(page.rows.length, 60);
+  assert.equal(page.truncated, undefined);
+});
+
+test("top boven 50 wordt in stukken van 50 gelezen", async () => {
+  const client = openClose((args) => {
+    const start = args.range.offset;
+    const count = start >= 100 ? 20 : 50;
+    const rows = Array.from({ length: count }, (_, i) => row(`b${start + i}`, { Naam: `R${start + i}` }));
+    return section(rows, { totalRowCount: 120 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const page = await readPage(session, {
+    pageId: 810, filters: [], columns: [], top: 120, skip: 0,
+  });
+  assert.equal(page.rows.length, 120);
+  assert.equal(page.rows[0].bookmark, "b0");
+  assert.equal(page.rows[119].bookmark, "b119");
+  assert.equal(page.truncated, undefined);
+  const reads = client.calls.filter((call) => call.name === "bc_read_data");
+  assert.deepEqual(reads.map((call) => call.arguments.range), [
+    { offset: 0, limit: 50 },
+    { offset: 50, limit: 50 },
+    { offset: 100, limit: 50 },
+  ]);
+});
+
+test("een leeg vervolg herleest het begin als het venster vervangen is", async () => {
+  let phase = 0;
+  const client = openClose((args) => {
+    if (args.range.offset >= 50) {
+      phase = 1;
+      return section([], { totalRowCount: 80 });
+    }
+    const start = phase === 0 ? 0 : 50;
+    const rows = Array.from({ length: 50 }, (_, i) => row(`b${start + i}`, { Naam: `R${start + i}` }));
+    return section(rows, { totalRowCount: 80 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const page = await readPage(session, {
+    pageId: 810, filters: [], columns: [], top: 80, skip: 0,
+  });
+  assert.equal(page.rows.length, 80);
+  assert.equal(page.rows[50].bookmark, "b50");
+  assert.equal(page.truncated, undefined);
+});
+
+test("stilvallend venster van 50 zet truncated", async () => {
+  const rows = Array.from({ length: 50 }, (_, i) => row(`b${i}`, { Naam: `R${i}` }));
+  const client = openClose((args) => {
+    if (args.range.offset >= 50) return section([], { totalRowCount: 500 });
+    return section(rows, { totalRowCount: 500 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  const page = await readPage(session, {
+    pageId: 810, filters: [], columns: [], top: 500, skip: 0,
+  });
+  assert.equal(page.rows.length, 50);
+  assert.equal(page.truncated, true);
 });
 
 test("collectPageIds vindt geneste ids", () => {

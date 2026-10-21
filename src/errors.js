@@ -29,6 +29,14 @@ export class ForbiddenError extends BridgeError {
   }
 }
 
+export class UnsupportedToolError extends BridgeError {
+  constructor(tool) {
+    super("Deze tool wordt niet ondersteund door de bridge", { status: 501, code: "UNSUPPORTED_TOOL" });
+    this.name = "UnsupportedToolError";
+    this.tool = tool;
+  }
+}
+
 export class QueueTimeoutError extends BridgeError {
   constructor() {
     super("Geen vrije BC-sessie binnen de wachttijd", { status: 503, code: "QUEUE_TIMEOUT" });

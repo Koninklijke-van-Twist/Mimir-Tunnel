@@ -49,6 +49,18 @@ test("timeout markeert de sessie dood", async () => {
   rejectCall(new Error("afgebroken"));
 });
 
+test("onbekende tool van het pakket wordt 501 en de sessie blijft leven", async () => {
+  const client = scriptedClient(() => {
+    throw new Error("MCP error -32602: Unknown tool: bc_does_not_exist");
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  await assert.rejects(
+    () => session.call("bc_read_data", {}),
+    (err) => err.status === 501 && err.code === "UNSUPPORTED_TOOL" && err.tool === "bc_read_data",
+  );
+  assert.equal(session.dead, false);
+});
+
 test("transportfout EPIPE markeert de sessie dood", async () => {
   const client = scriptedClient(() => {
     throw new Error("read EPIPE");

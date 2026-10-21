@@ -29,10 +29,21 @@ test("allowlist filtert alleen als hij gezet is", () => {
   );
 });
 
-test("onbekende tool telt als muterend", () => {
-  assert.equal(isWriteTool("bc_future_post"), true);
-  assert.throws(() => assertToolAllowed("bc_future_post", { allowWrite: false, allowlist: null }));
-  assert.doesNotThrow(() => assertToolAllowed("bc_future_post", { allowWrite: true, allowlist: null }));
+test("onbekende bc-tool is 501, een geblokkeerde bekende tool blijft 403", () => {
+  assert.equal(isWriteTool("bc_future_post"), false);
+  assert.throws(
+    () => assertToolAllowed("bc_does_not_exist", { allowWrite: true, allowlist: null }),
+    (err) => err.status === 501 && err.code === "UNSUPPORTED_TOOL" && err.tool === "bc_does_not_exist"
+      && err.message === "Deze tool wordt niet ondersteund door de bridge",
+  );
+  assert.throws(
+    () => assertToolAllowed("bc_does_not_exist", { allowWrite: false, allowlist: new Set(["bc_does_not_exist"]) }),
+    (err) => err.status === 501 && err.code === "UNSUPPORTED_TOOL",
+  );
+  assert.throws(
+    () => assertToolAllowed("bc_write_data", { allowWrite: false, allowlist: null }),
+    (err) => err.status === 403 && err.code === "TOOL_FORBIDDEN",
+  );
 });
 
 test("ongeldige toolnaam wordt geweigerd", () => {

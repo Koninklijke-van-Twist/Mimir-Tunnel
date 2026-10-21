@@ -1,4 +1,6 @@
+import { rowMatchesFilters } from "./bc-filter.js";
 import { BadRequestError } from "./errors.js";
+import { isUnsupportedFilterError, READ_CHUNK, scanRows } from "./page-window.js";
 
 const PAGE_ID = /^[1-9]\d*$/;
 
@@ -91,18 +93,99 @@ export async function readPage(session, query, logger) {
     throw new BadRequestError("bc_open_page gaf geen pageContextId");
   }
   try {
-    const args = { pageContextId };
-    if (query.section) args.section = query.section;
-    if (query.filters.length > 0) args.filters = query.filters;
-    if (query.columns.length > 0) args.columns = query.columns;
-    if (query.top != null || query.skip != null) {
-      args.range = { offset: query.skip ?? 0, limit: query.top ?? 100 };
+    const filters = query.filters;
+    let loaded;
+    let filterMode;
+    if (filters.length > 0) {
+      try {
+        loaded = await loadWindow(session, query, pageContextId, { useFilters: true });
+        filterMode = "server";
+      } catch (err) {
+        if (!isUnsupportedFilterError(err)) throw err;
+        logger?.info("page.filter_fallback", { pageId: query.pageId, code: err.code });
+        loaded = await loadWindow(session, query, pageContextId, { clientFilter: true });
+        filterMode = "client";
+      }
+    } else {
+      loaded = await loadWindow(session, query, pageContextId, {});
     }
-    const read = await session.call("bc_read_data", args);
-    return shapePage(query.pageId, session.company, read);
+    const shaped = shapePage(query.pageId, session.company, loaded.read);
+    if (filterMode) shaped.filterMode = filterMode;
+    if (loaded.truncated) shaped.truncated = true;
+    return shaped;
   } finally {
     await closeOne(session, pageContextId, logger);
   }
+}
+
+/**
+ * Zonder top, skip en filter: één leesactie, het venster dat BC zelf geeft.
+ * Een venster dat in 50 rijen past: één bc_read_data met die range.
+ * Daarboven, en bij client-side filter: stukken van 50, daarna skip/top lokaal.
+ * Een filter zonder top, of alleen skip, gebruikt top 100.
+ */
+async function loadWindow(session, query, pageContextId, { useFilters = false, clientFilter = false }) {
+  const offset = query.skip ?? 0;
+  const bounded = query.top != null || query.skip != null || clientFilter || useFilters;
+  const limit = query.top ?? (bounded ? 100 : null);
+  const args = { pageContextId };
+  if (query.section) args.section = query.section;
+  if (useFilters && query.filters.length > 0) args.filters = query.filters;
+  if (!clientFilter && query.columns.length > 0) args.columns = query.columns;
+
+  if (limit == null) {
+    return { read: await session.call("bc_read_data", args), truncated: false };
+  }
+  if (!clientFilter && offset + limit <= READ_CHUNK) {
+    const read = await session.call("bc_read_data", { ...args, range: { offset, limit } });
+    return { read, truncated: false };
+  }
+
+  const match = clientFilter ? (cells) => rowMatchesFilters(cells, query.filters) : null;
+  const scanned = await scanRows(session, args, { target: offset + limit, match });
+  if (scanned.card) {
+    return {
+      read: clientFilter ? applyCardFilter(scanned.read, query) : scanned.read,
+      truncated: false,
+    };
+  }
+  let rows = scanned.rows.slice(offset, offset + limit);
+  if (clientFilter) rows = rows.map((row) => projectRow(row, query.columns));
+  return { read: withRows(scanned.read, rows), truncated: scanned.truncated };
+}
+
+function applyCardFilter(read, query) {
+  const section = read?.section ?? {};
+  const fields = Array.isArray(section.fields) ? section.fields : [];
+  const cells = {};
+  for (const field of fields) {
+    if (field && typeof field.name === "string") cells[field.name] = field.value ?? "";
+  }
+  const matched = (query.skip ?? 0) === 0 && rowMatchesFilters(cells, query.filters);
+  let next = matched ? fields : [];
+  if (matched && query.columns.length > 0) {
+    const wanted = new Set(query.columns.map((column) => column.toLowerCase()));
+    next = next.filter((field) => wanted.has(String(field.name).toLowerCase()));
+  }
+  return { ...read, section: { ...section, rows: [], fields: next } };
+}
+
+function projectRow(row, columns) {
+  return {
+    bookmark: row?.bookmark ?? null,
+    cells: projectCells(row?.cells, columns),
+  };
+}
+
+function projectCells(cells, columns) {
+  const source = cells && typeof cells === "object" ? cells : {};
+  if (!columns.length) return source;
+  const wanted = new Set(columns.map((column) => column.toLowerCase()));
+  return Object.fromEntries(Object.entries(source).filter(([key]) => wanted.has(key.toLowerCase())));
+}
+
+function withRows(read, rows) {
+  return { ...read, section: { ...(read?.section ?? {}), rows } };
 }
 
 async function closeOne(session, pageContextId, logger) {

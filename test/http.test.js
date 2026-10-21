@@ -152,6 +152,22 @@ test("dode sessie wordt één keer opnieuw ingelogd bij lezen, niet bij schrijve
   assert.equal(writeFx.created(), 1);
 });
 
+test("onbekende bc-tool is 501 met JSON en opent geen sessie", async (t) => {
+  const fx = await fixture(() => bcOk({}));
+  t.after(() => stop(fx));
+  const response = await json(fx.base, "/call", {
+    method: "POST",
+    body: { tool: "bc_does_not_exist", args: {} },
+  });
+  assert.equal(response.status, 501);
+  assert.deepEqual(response.payload, {
+    error: "UNSUPPORTED_TOOL",
+    tool: "bc_does_not_exist",
+    message: "Deze tool wordt niet ondersteund door de bridge",
+  });
+  assert.equal(fx.created(), 0);
+});
+
 test("schrijven uit en allowlist gelden voor POST /call", async (t) => {
   let calls = 0;
   const fx = await fixture(() => {

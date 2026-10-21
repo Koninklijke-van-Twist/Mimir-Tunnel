@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import { presentedBearer, sanitizeKeyId, tokenMatches } from "./auth.js";
-import { BadRequestError, BridgeError, UnauthorizedError } from "./errors.js";
+import { BadRequestError, BridgeError, UnauthorizedError, UnsupportedToolError } from "./errors.js";
 import { listCompanies, parsePageQuery, readPage } from "./pages.js";
 import { assertToolAllowed, assertToolsAllowed } from "./policy.js";
 import { withSession } from "./pool.js";
@@ -30,15 +30,23 @@ export function createServer({ config, pool, logger }) {
         tool: err.tool,
         keyId,
       });
-      const body = {
-        ok: false,
-        error: mapped.expose === false ? "Interne fout" : mapped.message,
-        code: mapped.code || "INTERNAL",
-      };
-      if (err.tool) body.tool = err.tool;
-      if (err.partial?.closedPages) body.closedPages = err.partial.closedPages;
-      if (err.partial?.calls) body.calls = err.partial.calls;
-      send(res, status, body);
+      if (err instanceof UnsupportedToolError) {
+        send(res, status, {
+          error: "UNSUPPORTED_TOOL",
+          tool: err.tool,
+          message: err.message,
+        });
+      } else {
+        const body = {
+          ok: false,
+          error: mapped.expose === false ? "Interne fout" : mapped.message,
+          code: mapped.code || "INTERNAL",
+        };
+        if (err.tool) body.tool = err.tool;
+        if (err.partial?.closedPages) body.closedPages = err.partial.closedPages;
+        if (err.partial?.calls) body.calls = err.partial.calls;
+        send(res, status, body);
+      }
     } finally {
       logger.info("http", {
         method: req.method,
