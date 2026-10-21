@@ -98,6 +98,7 @@ test("companies en een pagina: open, lees, sluit, cellen op caption", async (t) 
     "bc_switch_company",
     "bc_open_page",
     "bc_read_data",
+    "bc_read_data",
     "bc_close_page",
   ]);
   const read = fx.sessions[0].clientRef.calls.find((call) => call.name === "bc_read_data");

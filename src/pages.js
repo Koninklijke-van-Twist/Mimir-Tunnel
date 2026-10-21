@@ -92,10 +92,10 @@ export async function readPage(session, query, logger) {
     session.tainted = true;
     throw new BadRequestError("bc_open_page gaf geen pageContextId");
   }
+  let filterMode;
   try {
     const filters = query.filters;
     let loaded;
-    let filterMode;
     if (filters.length > 0) {
       try {
         loaded = await loadWindow(session, query, pageContextId, { useFilters: true });
@@ -114,7 +114,18 @@ export async function readPage(session, query, logger) {
     if (loaded.truncated) shaped.truncated = true;
     return shaped;
   } finally {
+    // BC onthoudt serverfilters per pagina binnen de sessie, ook na sluiten.
+    if (filterMode === "server") await clearFilters(session, pageContextId, logger);
     await closeOne(session, pageContextId, logger);
+  }
+}
+
+async function clearFilters(session, pageContextId, logger) {
+  if (session.dead) return;
+  try {
+    await session.call("bc_read_data", { pageContextId, clearFilters: true, range: { offset: 0, limit: 1 } });
+  } catch (err) {
+    logger?.warn("page.clear_filters_failed", { code: err.code || "ERROR" });
   }
 }
 
