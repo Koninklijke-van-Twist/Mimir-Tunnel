@@ -64,18 +64,12 @@ sudo tar -C "$(pwd)" \
   --exclude .git --exclude node_modules --exclude .env --exclude vendor --exclude logs --exclude .state \
   -cf - . | sudo tar -C /opt/mimir-bc-bridge -xf -
 sudo chown -R bcbridge:bcbridge /opt/mimir-bc-bridge
-sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && npm install --omit=dev'
+sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && bash scripts/build-bc-mcp.sh && npm install --omit=dev'
 ```
 
-`npm install` in **deze** repo is het goede pad: `business-central-mcp` komt als dependency binnen en npm slaat de devDependencies van dat pakket over.
+`business-central-mcp` komt uit de fork [`Timfa-KVT/business-central-mcp`](https://github.com/Timfa-KVT/business-central-mcp) met de `ColumnBinderPath`-fix voor lijstfilters. Repo en commit staan op één plek: `bcMcp` in `package.json`. `scripts/build-bc-mcp.sh` (of `npm run build:bc`) haalt die commit op, draait daar `npm ci && npm run build && npm pack` in een tijdelijke map en legt `vendor/business-central-mcp.tgz` neer; de dependency is `file:vendor/business-central-mcp.tgz`. devDependencies (TypeScript) blijven in de bouwmap. `scripts/update.sh` doet dit vanzelf als `package.json` of het lockbestand verandert. Ander commit: alleen `bcMcp.rev` aanpassen, `npm run build:bc && npm install`, lockbestand meecommitten.
 
-`npm pack business-central-mcp@2.2.0`, uitpakken en dáár `npm i --omit=dev` draaien faalt op npm 10 met `Cannot read properties of null (reading 'edgesOut')` (arborist, in de devDependency-boom van vitest). Oplossing als een installatie toch op die fout stukloopt:
-
-```bash
-node scripts/install-bc-mcp.mjs
-```
-
-Het script probeert eerst `npm install --omit=dev`. Bij `edgesOut` pakt het de tarball, haalt lockfile, `devDependencies` en `scripts` uit `package.json`, en draait `npm install --omit=dev` in die uitgepakte map (`vendor/`, niet committen).
+Na een wijziging aan `scripts/update.sh` moet de root-kopie opnieuw worden geïnstalleerd: `sudo install -o root -g root -m 755 /home/administrator/mimir-tunnel/scripts/update.sh /usr/local/sbin/mimir-tunnel-update`.
 
 ```bash
 sudo cp /opt/mimir-bc-bridge/.env.example /opt/mimir-bc-bridge/.env
