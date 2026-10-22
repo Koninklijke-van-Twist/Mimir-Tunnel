@@ -1,6 +1,6 @@
 # Mimir-Tunnel
 
-Lokale HTTP-bridge waarmee Mímir (PHP op sleutels.kvt.nl) Business Central aanroept via [`business-central-mcp@2.2.1`](https://github.com/SShadowS/business-central-mcp) (SShadowS). Dat pakket spreekt het webclient-websocketprotocol `/csh` op poort 443. Deze bridge zet daar een kleine JSON-API voor, met een bearer-token, een sessiepool en een schrijfschakelaar.
+Lokale HTTP-bridge waarmee Mímir (PHP op sleutels.kvt.nl) Business Central aanroept via [`business-central-mcp`](https://github.com/SShadowS/business-central-mcp) (SShadowS), gebouwd uit de fork [`Timfa-KVT/business-central-mcp`](https://github.com/Timfa-KVT/business-central-mcp) branch `feat/key-by-design-name` (2.3.0, met optioneel `keyBy: "designName"`). Dat pakket spreekt het webclient-websocketprotocol `/csh` op poort 443. Deze bridge zet daar een kleine JSON-API voor, met een bearer-token, een sessiepool en een schrijfschakelaar.
 
 De bridge luistert **alleen op `127.0.0.1`**. Mímir roept hem met curl aan op dezelfde machine, of via een tunnel die op die loopback landt.
 
@@ -67,7 +67,11 @@ sudo chown -R bcbridge:bcbridge /opt/mimir-bc-bridge
 sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && npm install --omit=dev'
 ```
 
-`business-central-mcp` komt van npm, vastgepind op `2.2.1` (upstream [`SShadowS/business-central-mcp`](https://github.com/SShadowS/business-central-mcp), tag `v2.2.1`). Die versie bevat de `ColumnBinderPath`-fix voor lijstfilters (PR #44), dus een fork of eigen build is niet meer nodig. Andere versie: het versienummer in `package.json` aanpassen, `npm install`, lockbestand meecommitten. `scripts/update.sh` draait `npm install --omit=dev` vanzelf als `package.json` of het lockbestand verandert.
+`business-central-mcp` komt uit de fork [`Timfa-KVT/business-central-mcp`](https://github.com/Timfa-KVT/business-central-mcp), branch `feat/key-by-design-name`, vastgepind op commit `f22b6435c6fb1652cf7dae2c7ce2a00a51d2c273` ([PR #1](https://github.com/Timfa-KVT/business-central-mcp/pull/1)). Die fork voegt optioneel `keyBy: "designName"` en `includeColumnMetadata` toe aan `bc_read_data`, `bc_open_page`, `bc_navigate`, `bc_write_data`, `bc_lookup`, `bc_execute_action` en `bc_get_operation`. Zonder `keyBy` gedraagt hij zich als upstream 2.2.1 (incl. de `ColumnBinderPath`-fix).
+
+De fork publiceert geen `dist/` en heeft geen `prepare`-script, dus een kale git-dependency installeert niets bruikbaars. Daarom bouwt `scripts/build-bc-mcp.sh` (`npm run build:bc`) het pakket uit `bcMcp.repo` @ `bcMcp.rev` in `package.json` naar `vendor/business-central-mcp.tgz` (TypeScript alleen in een tijdelijke map), en wijst de dependency naar `file:vendor/business-central-mcp.tgz`. De build is reproduceerbaar: de integrity-hash in `package-lock.json` klopt met een verse build van dezelfde commit. `vendor/` staat in `.gitignore`.
+
+Bij een handmatige installatie dus eerst bouwen: `sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && bash scripts/build-bc-mcp.sh && npm install --omit=dev'`. `scripts/update.sh` doet dat vanzelf als `package.json` of het lockbestand verandert (of `node_modules` ontbreekt). Andere commit: `bcMcp.rev` (volledige SHA) aanpassen, `npm run build:bc && npm install`, lockbestand meecommitten.
 
 Na een wijziging aan `scripts/update.sh` moet de root-kopie opnieuw worden geïnstalleerd: `sudo install -o root -g root -m 755 /home/administrator/mimir-tunnel/scripts/update.sh /usr/local/sbin/mimir-tunnel-update`.
 
@@ -168,6 +172,10 @@ curl -sS -g \
 - `columns` — kommagescheiden captions. Bij client-side filter past de bridge ze pas ná het matchen toe, zodat de filterkolom in de ruwe rijen mag ontbreken uit deze lijst.
 - `top` / `skip` — het gevraagde venster. Alleen `skip`, of een filter zonder `top`, gebruikt `top=100`. Zonder `top`, `skip` en `filter` is het één leesactie zonder `range` (het venster dat BC zelf geeft). Past `skip + top` in 50 rijen, dan is het één `bc_read_data` met die `range`.
 - `section` — standaard de header van de pagina (`lines`, `factbox:...`).
+- `keyBy` — optioneel `designName` (of header `X-BC-Key-By: designName`). Dan gaat `keyBy: "designName"` mee naar `bc_open_page` en `bc_read_data`: `cells`/`fields` krijgen de AL-controlnaam (DesignName) als sleutel in plaats van de caption, dus taalonafhankelijk (`No` i.p.v. `Nr.`/`No.`). `filter` en `columns` accepteren dan DesignName of caption. Zonder `keyBy` (of `caption`) gaat er niets extra mee en is het gedrag ongewijzigd. Andere waarden: 400.
+- `includeColumnMetadata` — `1`/`true`: geeft `includeColumnMetadata: true` door; het antwoord bevat dan `columns: [{ key, caption, designName?, … }]`.
+
+Het antwoord van `/page` bevat altijd `keyBy` (`caption` of `designName`), zodat de caller ziet welke sleutels de cellen hebben. Een bridge van vóór deze versie stuurt dat veld niet mee: dan zijn de sleutels captions.
 
 `bc_read_data` houdt het geladen venster op deze webclient op ongeveer 50 rijen: een `limit` van 500 komt terug als 50, omdat een `DataLoaded` het venster vervangt in plaats van verlengt. Een `offset` voorbij dat venster is dan een lege slice, terwijl de nieuwe rijen vooraan staan. De bridge leest daarom intern in stukken van 50 en plakt unieke bookmarks aan elkaar. Komt een vervolgstuk leeg terug of met dezelfde bookmarks, dan herleest ze het begin één keer. Blijft het daarna stilstaan, of zijn er 40 leesacties geweest, dan stopt ze. `truncated: true` staat in het antwoord als het gevraagde `top` niet gevuld is en het laatste stuk nog vol was (`totalRowCount` ontbreekt of is groter dan wat er binnen is). Een korter laatste stuk geldt als het einde van de lijst. Bij `filterMode: client` gelden `top` en `skip` voor de treffers. Hoogstens 40 aanroepen: volle stukken van 50 zijn 2000 rijen; als elk vervolg een herlezing nodig heeft, minder.
 
@@ -200,6 +208,8 @@ curl -sS \
   ]}' \
   "$BASE/call"
 ```
+
+Optioneel staat op body-niveau `"keyBy": "designName"` (en/of `"includeColumnMetadata": true`), of de header `X-BC-Key-By: designName`. De bridge zet dat dan op elke call die het kent (`bc_read_data`, `bc_open_page`, `bc_navigate`, `bc_write_data`, `bc_lookup`, `bc_execute_action`, `bc_get_operation`), tenzij de call zelf al `keyBy` in `args` heeft. Bij `bc_write_data` worden `fields`-sleutels dan eerst op DesignName gezocht, daarna op caption. Zonder deze velden blijven de args exact zoals de caller ze stuurt.
 
 `$0.pageContextId` wijst naar het resultaat van call 0 in dezelfde body (een heel string-argument, geen stukje tekst). Na afloop staan gesloten pagina's in `closedPages`.
 

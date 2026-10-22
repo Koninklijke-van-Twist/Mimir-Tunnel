@@ -1,10 +1,11 @@
 import { rowMatchesFilters } from "./bc-filter.js";
 import { BadRequestError } from "./errors.js";
+import { applyKeyBy, parseBool, parseKeyBy } from "./key-by.js";
 import { isUnsupportedFilterError, READ_CHUNK, scanRows } from "./page-window.js";
 
 const PAGE_ID = /^[1-9]\d*$/;
 
-export function parsePageQuery(url, pageIdRaw) {
+export function parsePageQuery(url, pageIdRaw, headers = {}) {
   if (!PAGE_ID.test(String(pageIdRaw))) {
     throw new BadRequestError("page-id moet een positief geheel getal zijn");
   }
@@ -27,7 +28,12 @@ export function parsePageQuery(url, pageIdRaw) {
   const skip = optionalInt(url.searchParams.get("skip"), "skip", 0);
   const company = url.searchParams.get("company") || undefined;
   const section = url.searchParams.get("section") || undefined;
+  const keyBy = parseKeyBy(url.searchParams.get("keyBy"), "keyBy")
+    ?? parseKeyBy(headerValue(headers, "x-bc-key-by"), "X-BC-Key-By");
+  const includeColumnMetadata = parseBool(url.searchParams.get("includeColumnMetadata"), "includeColumnMetadata");
   return {
+    keyBy,
+    includeColumnMetadata,
     pageId: Number(pageIdRaw),
     company,
     section,
@@ -38,6 +44,11 @@ export function parsePageQuery(url, pageIdRaw) {
   };
 }
 
+function headerValue(headers, name) {
+  const value = headers?.[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function optionalInt(raw, name, min) {
   if (raw == null || raw === "") return undefined;
   if (!/^\d+$/.test(raw)) throw new BadRequestError(`${name} moet een geheel getal zijn`);
@@ -46,7 +57,7 @@ function optionalInt(raw, name, min) {
   return value;
 }
 
-export function shapePage(pageId, company, read) {
+export function shapePage(pageId, company, read, keyBy) {
   const section = read?.section ?? {};
   const rows = Array.isArray(section.rows)
     ? section.rows.map((row) => ({
@@ -65,6 +76,8 @@ export function shapePage(pageId, company, read) {
     rows,
   };
   if (Array.isArray(section.fields)) body.fields = section.fields;
+  if (Array.isArray(section.columns)) body.columns = section.columns;
+  body.keyBy = keyBy ?? "caption";
   return body;
 }
 
@@ -86,7 +99,7 @@ export async function readPage(session, query, logger) {
     await session.call("bc_switch_company", { companyName: query.company });
     session.company = query.company;
   }
-  const opened = await session.call("bc_open_page", { pageId: query.pageId });
+  const opened = await session.call("bc_open_page", applyKeyBy("bc_open_page", { pageId: query.pageId }, { keyBy: query.keyBy }));
   const pageContextId = opened?.pageContextId;
   if (typeof pageContextId !== "string" || pageContextId === "") {
     session.tainted = true;
@@ -109,7 +122,7 @@ export async function readPage(session, query, logger) {
     } else {
       loaded = await loadWindow(session, query, pageContextId, {});
     }
-    const shaped = shapePage(query.pageId, session.company, loaded.read);
+    const shaped = shapePage(query.pageId, session.company, loaded.read, query.keyBy);
     if (filterMode) shaped.filterMode = filterMode;
     if (loaded.truncated) shaped.truncated = true;
     return shaped;
@@ -139,7 +152,7 @@ async function loadWindow(session, query, pageContextId, { useFilters = false, c
   const offset = query.skip ?? 0;
   const bounded = query.top != null || query.skip != null || clientFilter || useFilters;
   const limit = query.top ?? (bounded ? 100 : null);
-  const args = { pageContextId };
+  const args = applyKeyBy("bc_read_data", { pageContextId }, query);
   if (query.section) args.section = query.section;
   if (useFilters && query.filters.length > 0) args.filters = query.filters;
   if (!clientFilter && query.columns.length > 0) args.columns = query.columns;

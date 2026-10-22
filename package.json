@@ -9,10 +9,16 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:bc": "bash scripts/build-bc-mcp.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
-    "business-central-mcp": "2.2.1"
+    "business-central-mcp": "file:vendor/business-central-mcp.tgz"
+  },
+  "bcMcp": {
+    "repo": "https://github.com/Timfa-KVT/business-central-mcp.git",
+    "rev": "f22b6435c6fb1652cf7dae2c7ce2a00a51d2c273",
+    "branch": "feat/key-by-design-name"
   }
 }
