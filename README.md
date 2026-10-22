@@ -1,6 +1,6 @@
 # Mimir-Tunnel
 
-Lokale HTTP-bridge waarmee Mímir (PHP op sleutels.kvt.nl) Business Central aanroept via [`business-central-mcp@2.2.0`](https://github.com/SShadowS/business-central-mcp) (SShadowS). Dat pakket spreekt het webclient-websocketprotocol `/csh` op poort 443. Deze bridge zet daar een kleine JSON-API voor, met een bearer-token, een sessiepool en een schrijfschakelaar.
+Lokale HTTP-bridge waarmee Mímir (PHP op sleutels.kvt.nl) Business Central aanroept via [`business-central-mcp@2.2.1`](https://github.com/SShadowS/business-central-mcp) (SShadowS). Dat pakket spreekt het webclient-websocketprotocol `/csh` op poort 443. Deze bridge zet daar een kleine JSON-API voor, met een bearer-token, een sessiepool en een schrijfschakelaar.
 
 De bridge luistert **alleen op `127.0.0.1`**. Mímir roept hem met curl aan op dezelfde machine, of via een tunnel die op die loopback landt.
 
@@ -64,10 +64,10 @@ sudo tar -C "$(pwd)" \
   --exclude .git --exclude node_modules --exclude .env --exclude vendor --exclude logs --exclude .state \
   -cf - . | sudo tar -C /opt/mimir-bc-bridge -xf -
 sudo chown -R bcbridge:bcbridge /opt/mimir-bc-bridge
-sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && bash scripts/build-bc-mcp.sh && npm install --omit=dev'
+sudo -u bcbridge bash -c 'cd /opt/mimir-bc-bridge && npm install --omit=dev'
 ```
 
-`business-central-mcp` komt uit de fork [`Timfa-KVT/business-central-mcp`](https://github.com/Timfa-KVT/business-central-mcp) met de `ColumnBinderPath`-fix voor lijstfilters. Repo en commit staan op één plek: `bcMcp` in `package.json`. `scripts/build-bc-mcp.sh` (of `npm run build:bc`) haalt die commit op, draait daar `npm ci && npm run build && npm pack` in een tijdelijke map en legt `vendor/business-central-mcp.tgz` neer; de dependency is `file:vendor/business-central-mcp.tgz`. devDependencies (TypeScript) blijven in de bouwmap. `scripts/update.sh` doet dit vanzelf als `package.json` of het lockbestand verandert. Ander commit: alleen `bcMcp.rev` aanpassen, `npm run build:bc && npm install`, lockbestand meecommitten.
+`business-central-mcp` komt van npm, vastgepind op `2.2.1` (upstream [`SShadowS/business-central-mcp`](https://github.com/SShadowS/business-central-mcp), tag `v2.2.1`). Die versie bevat de `ColumnBinderPath`-fix voor lijstfilters (PR #44), dus een fork of eigen build is niet meer nodig. Andere versie: het versienummer in `package.json` aanpassen, `npm install`, lockbestand meecommitten. `scripts/update.sh` draait `npm install --omit=dev` vanzelf als `package.json` of het lockbestand verandert.
 
 Na een wijziging aan `scripts/update.sh` moet de root-kopie opnieuw worden geïnstalleerd: `sudo install -o root -g root -m 755 /home/administrator/mimir-tunnel/scripts/update.sh /usr/local/sbin/mimir-tunnel-update`.
 
