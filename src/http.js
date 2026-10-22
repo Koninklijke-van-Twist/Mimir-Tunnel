@@ -82,7 +82,7 @@ async function route(req, res, ctx) {
     return 200;
   }
   if (req.method === "GET" && pageMatch) {
-    const query = parsePageQuery(url, pageMatch[1]);
+    const query = parsePageQuery(url, pageMatch[1], req.headers);
     const needed = ["bc_open_page", "bc_read_data"];
     if (query.company) needed.push("bc_switch_company");
     assertToolsAllowed(needed, config);
@@ -92,7 +92,7 @@ async function route(req, res, ctx) {
   }
   if (req.method === "POST" && path === "/call") {
     const body = await readJson(req, config.bodyLimitBytes);
-    const spec = normalizeCalls(body);
+    const spec = normalizeCalls(body, req.headers);
     for (const call of spec.calls) assertToolAllowed(call.tool, config);
     const result = await withSession(
       pool,

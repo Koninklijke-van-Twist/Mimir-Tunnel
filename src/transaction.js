@@ -1,11 +1,12 @@
 import { BadRequestError } from "./errors.js";
+import { applyKeyBy, KEY_BY_HEADER, parseBool, parseKeyBy } from "./key-by.js";
 import { READ_TOOLS } from "./policy.js";
 import { resolveArgs } from "./placeholders.js";
 
 const TOOL_NAME = /^bc_[a-z0-9_]+$/;
 const MAX_CALLS = 20;
 
-export function normalizeCalls(body) {
+export function normalizeCalls(body, headers = {}) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new BadRequestError("Body moet een JSON-object zijn");
   }
@@ -21,9 +22,21 @@ export function normalizeCalls(body) {
     if (body.calls.length > MAX_CALLS) {
       throw new BadRequestError(`Maximaal ${MAX_CALLS} calls per transactie`);
     }
-    return { batch: true, calls: body.calls.map(validateCall) };
+    return { batch: true, calls: withKeyBy(body.calls.map(validateCall), body, headers) };
   }
-  return { batch: false, calls: [validateCall(body)] };
+  return { batch: false, calls: withKeyBy([validateCall(body)], body, headers) };
+}
+
+/**
+ * Optioneel `keyBy` / `includeColumnMetadata` op body-niveau (of header
+ * X-BC-Key-By) geldt voor alle calls die het begrijpen; args per call winnen.
+ */
+function withKeyBy(calls, body, headers) {
+  const header = headers?.[KEY_BY_HEADER];
+  const keyBy = parseKeyBy(body.keyBy, "keyBy") ?? parseKeyBy(Array.isArray(header) ? header[0] : header, "X-BC-Key-By");
+  const includeColumnMetadata = parseBool(body.includeColumnMetadata, "includeColumnMetadata");
+  if (!keyBy && includeColumnMetadata == null) return calls;
+  return calls.map((call) => ({ tool: call.tool, args: applyKeyBy(call.tool, call.args, { keyBy, includeColumnMetadata }) }));
 }
 
 function validateCall(call) {
