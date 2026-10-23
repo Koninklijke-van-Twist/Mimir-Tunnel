@@ -18,7 +18,7 @@
   },
   "bcMcp": {
     "repo": "https://github.com/Timfa-KVT/business-central-mcp.git",
-    "rev": "f22b6435c6fb1652cf7dae2c7ce2a00a51d2c273",
+    "rev": "492ccad34cf60227a25f7f1ca2d0c7db97c53a4a",
     "branch": "feat/key-by-design-name"
   }
 }

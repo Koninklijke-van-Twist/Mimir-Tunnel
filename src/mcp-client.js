@@ -34,6 +34,8 @@ export async function createBcClient(config, logger) {
     LOG_DIR: stateDir,
   };
   if (bc.odataCompany) env.BC_ODATA_COMPANY = bc.odataCompany;
+  // Opt-in proef: 1 = ook verborgen FlowFields laten berekenen (sessiebreed).
+  if (process.env.BC_CALC_INVISIBLE_FLOWFIELDS === "1") env.BC_CALC_INVISIBLE_FLOWFIELDS = "1";
 
   const transport = new StdioClientTransport({
     command: process.execPath,
