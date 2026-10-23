@@ -331,3 +331,14 @@ test("collectPageIds vindt geneste ids", () => {
   });
   assert.deepEqual([...ids].sort(), ["a", "b", "c"]);
 });
+
+test("client-filter op onbekende kolom faalt direct met 400", async () => {
+  const client = openClose((args) => {
+    if (args.filters) return bcErr("PROTOCOL_ERROR", "Column X has no columnBinderPath for filtering");
+    return section([row("1", { "Nr.": "1" }), row("2", { "Nr.": "2" })], { totalRowCount: 2 });
+  });
+  const session = new BcSession(client, { callTimeoutMs: 200 });
+  await assert.rejects(readPage(session, { pageId: 22, filters: [{ column: "Werkorder", value: "WO1" }], columns: [] }),
+    (err) => err.status === 400 && /filterkolom niet op de pagina: Werkorder/.test(err.message));
+  assert.equal(client.calls.filter((call) => call.name === "bc_read_data").length, 2);
+});

@@ -165,7 +165,13 @@ async function loadWindow(session, query, pageContextId, { useFilters = false, c
     return { read, truncated: false };
   }
 
-  const match = clientFilter ? (cells) => rowMatchesFilters(cells, query.filters) : null;
+  const match = clientFilter ? (cells) => {
+    // Kolom niet in de cellen: niet 2000 rijen scannen voor 0 resultaten.
+    const names = Object.keys(cells ?? {}).map((name) => name.toLowerCase());
+    const missing = query.filters.find((filter) => !names.includes(filter.column.toLowerCase()));
+    if (missing) throw new BadRequestError(`filterkolom niet op de pagina: ${missing.column}`);
+    return rowMatchesFilters(cells, query.filters);
+  } : null;
   const scanned = await scanRows(session, args, { target: offset + limit, match });
   if (scanned.card) {
     return {
