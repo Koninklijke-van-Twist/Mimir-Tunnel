@@ -24,3 +24,8 @@ git -C "$work" checkout -q FETCH_HEAD
 mkdir -p "$app/vendor"
 mv -f -- "$work"/business-central-mcp-*.tgz "$app/vendor/business-central-mcp.tgz"
 echo "==> vendor/business-central-mcp.tgz klaar."
+
+# De tgz wordt lokaal gebouwd en is niet byte-gelijk aan die van de lock: integriteit uit de lock halen.
+if [[ -f "$app/package-lock.json" ]]; then
+  node -e 'const f=process.argv[1],fs=require("fs"),l=JSON.parse(fs.readFileSync(f));const e=l.packages?.["node_modules/business-central-mcp"];if(e)delete e.integrity;fs.writeFileSync(f,JSON.stringify(l,null,2)+"\n")' "$app/package-lock.json"
+fi
